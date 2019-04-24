@@ -104,7 +104,6 @@ type SchedulerCache struct {
 	defaultPriorityClass *v1beta1.PriorityClass
 	defaultPriority      int32
 
-	errTasks    workqueue.RateLimitingInterface
 	deletedJobs workqueue.RateLimitingInterface
 }
 
@@ -190,7 +189,6 @@ func newSchedulerCache(config *rest.Config, schedulerName string, defaultQueue s
 		Nodes:           make(map[string]*kbapi.NodeInfo),
 		Queues:          make(map[kbapi.QueueID]*kbapi.QueueInfo),
 		PriorityClasses: make(map[string]*v1beta1.PriorityClass),
-		errTasks:        workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 		deletedJobs:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 		kubeclient:      kubernetes.NewForConfigOrDie(config),
 		kbclient:        kbver.NewForConfigOrDie(config),
@@ -314,9 +312,6 @@ func (sc *SchedulerCache) Run(stopCh <-chan struct{}) {
 		go sc.pcInformer.Informer().Run(stopCh)
 	}
 
-	// Re-sync error tasks.
-	go wait.Until(sc.processResyncTask, 0, stopCh)
-
 	// Cleanup jobs.
 	go wait.Until(sc.processCleanupJob, 0, stopCh)
 }
@@ -393,7 +388,7 @@ func (sc *SchedulerCache) Evict(taskInfo *kbapi.TaskInfo, reason string) error {
 	go func() {
 		err := sc.Evictor.Evict(p)
 		if err != nil {
-			sc.resyncTask(task)
+			glog.Error(err)
 		}
 	}()
 
@@ -438,7 +433,7 @@ func (sc *SchedulerCache) Bind(taskInfo *kbapi.TaskInfo, hostname string) error 
 
 	go func() {
 		if err := sc.Binder.Bind(p, hostname); err != nil {
-			sc.resyncTask(task)
+			glog.Error(err)
 		} else {
 			sc.Recorder.Eventf(p, v1.EventTypeNormal, "Scheduled", "Successfully assigned %v/%v to %v", p.Namespace, p.Name, hostname)
 		}
@@ -506,30 +501,6 @@ func (sc *SchedulerCache) processCleanupJob() {
 	} else {
 		// Retry
 		sc.deleteJob(job)
-	}
-}
-
-func (sc *SchedulerCache) resyncTask(task *kbapi.TaskInfo) {
-	sc.errTasks.AddRateLimited(task)
-}
-
-func (sc *SchedulerCache) processResyncTask() {
-	obj, shutdown := sc.errTasks.Get()
-	if shutdown {
-		return
-	}
-
-	defer sc.errTasks.Done(obj)
-
-	task, ok := obj.(*kbapi.TaskInfo)
-	if !ok {
-		glog.Errorf("failed to convert %v to *v1.Pod", obj)
-		return
-	}
-
-	if err := sc.syncTask(task); err != nil {
-		glog.Errorf("Failed to sync pod <%v/%v>, retry it.", task.Namespace, task.Name)
-		sc.resyncTask(task)
 	}
 }
 

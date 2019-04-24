@@ -25,8 +25,6 @@ import (
 	"k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
 	"k8s.io/api/scheduling/v1beta1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 
 	kbv1 "github.com/kubernetes-sigs/kube-batch/pkg/apis/scheduling/v1alpha1"
@@ -92,34 +90,6 @@ func (sc *SchedulerCache) addPod(pod *v1.Pod) error {
 	pi := kbapi.NewTaskInfo(pod)
 
 	return sc.addTask(pi)
-}
-
-func (sc *SchedulerCache) syncTask(oldTask *kbapi.TaskInfo) error {
-	sc.Mutex.Lock()
-	defer sc.Mutex.Unlock()
-
-	newPod, err := sc.kubeclient.CoreV1().Pods(oldTask.Namespace).Get(oldTask.Name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			sc.deleteTask(oldTask)
-			glog.V(3).Infof("Pod <%v/%v> was deleted, removed from cache.", oldTask.Namespace, oldTask.Name)
-
-			return nil
-		}
-		return fmt.Errorf("failed to get Pod <%v/%v>: err %v", oldTask.Namespace, oldTask.Name, err)
-	}
-
-	newTask := kbapi.NewTaskInfo(newPod)
-
-	return sc.updateTask(oldTask, newTask)
-}
-
-func (sc *SchedulerCache) updateTask(oldTask, newTask *kbapi.TaskInfo) error {
-	if err := sc.deleteTask(oldTask); err != nil {
-		return err
-	}
-
-	return sc.addTask(newTask)
 }
 
 // Assumes that lock is already acquired.
